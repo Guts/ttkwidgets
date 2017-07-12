@@ -13,3 +13,19 @@ class TestVerticalScrollFrame(BaseWidgetTest):
         frame = ScrolledFrame(self.window)
         frame.pack()
         self.window.update()
+
+    def test_scrollframe_scroll(self):
+        frame = ScrolledFrame(self.window)
+        frame._mouse_wheel(self.ScrollEvent())
+
+    def test_scrollframe_configure(self):
+        frame = ScrolledFrame(self.window)
+        frame.resize_canvas(200, 200)
+
+    def test_scrollframe_configure_interior(self):
+        frame = ScrolledFrame(self.window)
+        label = tk.Label(frame, text="Great label")
+        label.grid()
+
+    class ScrollEvent(object):
+        delta = 100

@@ -39,11 +39,11 @@ class ScrolledFrame(ttk.Frame):
         self._canvas.yview_moveto(0)
         self.interior = ttk.Frame(self._canvas)
         self._interior_id = self._canvas.create_window(0, 0, window=self.interior, anchor=tk.NW)
-        self.interior.bind("<Configure>", self.__configure_interior)
-        self._canvas.bind("<Configure>", self.__configure_canvas)
-        self.__grid_widgets()
+        self.interior.bind("<Configure>", self._configure_interior)
+        self._canvas.bind("<Configure>", self._configure_canvas)
+        self._grid_widgets()
 
-    def __grid_widgets(self):
+    def _grid_widgets(self):
         """
         Places all the child widgets in the appropriate positions
         :return: None
@@ -53,7 +53,7 @@ class ScrolledFrame(ttk.Frame):
         self.interior.grid(row=0, column=1, sticky="nswe")
         self._scrollbar.grid(row=0, column=scrollbar_column, sticky="ns")
 
-    def __configure_interior(self, *args):
+    def _configure_interior(self, *args):
         """
         Private function to configure the interior Frame
         :param args: Tkinter event
@@ -66,7 +66,7 @@ class ScrolledFrame(ttk.Frame):
             # If the interior Frame is wider than the canvas, automatically resize the canvas to fit the frame
             self._canvas.config(width=self.interior.winfo_reqwidth())
 
-    def __configure_canvas(self, *args):
+    def _configure_canvas(self, *args):
         """
         Private function to configure the internal Canvas
         Changes the width of the canvas to fit the interior Frame
@@ -76,7 +76,7 @@ class ScrolledFrame(ttk.Frame):
         if self.interior.winfo_reqwidth() is not self._canvas.winfo_width():
             self._canvas.configure(width=self.interior.winfo_reqwidth())
 
-    def __mouse_wheel(self, event):
+    def _mouse_wheel(self, event):
         """
         Private function to scroll the canvas view
         :param event: Tkinter event
