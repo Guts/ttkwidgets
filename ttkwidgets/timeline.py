@@ -124,7 +124,7 @@ class TimeLine(ttk.Frame):
         self._background = kwargs.pop("background", "gray90")
         self._style = kwargs.get("style", "TimeLine.TFrame")
         self._extend = kwargs.pop("extend", False)
-        self._snap_margin = kwargs.pop("snap_margin", 10)
+        self._snap_margin = kwargs.pop("snap_margin", 4)
         self._menu = kwargs.pop("menu", None)
         kwargs["style"] = self._style
         self._marker_font = kwargs.pop("marker_font", ("default", 10))
@@ -160,6 +160,7 @@ class TimeLine(ttk.Frame):
         self._after_id = None
         self._active = None
         self._ticks = ()
+        self._mouse_coords = None, None
 
         # Time pop-up frame
         self._time_label = None
@@ -286,8 +287,8 @@ class TimeLine(ttk.Frame):
         self._category_labels.clear()
         canvas_width = 0
         for category in (sorted(self._categories.keys() if isinstance(self._categories, dict) else self._categories)
-                                 if not isinstance(self._categories, OrderedDict)
-                                 else self._categories):
+                         if not isinstance(self._categories, OrderedDict)
+                         else self._categories):
             kwargs = self._categories[category] if isinstance(self._categories, dict) else {"text": category}
             kwargs["background"] = kwargs.get("background", self._background)
             kwargs["justify"] = kwargs.get("justify", tk.LEFT)
@@ -582,11 +583,11 @@ class TimeLine(ttk.Frame):
         Function bound to <B1-Motion> to allow the user to move the time marker
         """
         limit = self.pixel_width
-        x = self._canvas_ticks.canvasx(event.x)
-        x = min(max(x, 0), limit)
-        _, y = self._canvas_ticks.coords(self._time_marker_image)
-        self._canvas_ticks.coords(self._time_marker_image, x, y)
-        self._timeline.coords(self._time_marker_line, x, 0, x, self._timeline.winfo_height())
+        x_new = min(max(self._canvas_ticks.canvasx(event.x), 0), limit)
+        x_current, _ = self._canvas_ticks.coords(self._time_marker_image)
+        x_delta = x_new - x_current
+        self._canvas_ticks.move(self._time_marker_image, x_delta, 0)
+        self._timeline.move(self._time_marker_line, x_delta, 0)
         self.time_show(None)
 
     def time_marker_release(self, event):
@@ -766,6 +767,7 @@ class TimeLine(ttk.Frame):
         Event bound function for a left click on the _timeline Canvas
         """
         self.update_active()
+        self._mouse_coords = event.x, event.y  # Update the mouse coordinates
         iid = self.current_iid
         if iid is None:
             return
@@ -775,80 +777,63 @@ class TimeLine(ttk.Frame):
     def left_motion(self, event):
         """
         Event bound function for a left click and movement on the _timeline Canvas
+
+        First the change in position for the marker is calculated (x_delta, y_delta), and then the delta values are
+        corrected for TimeLine limits, TimeLine extension, category change, tick snapping and overlap protection.
         """
+        # Get the current marker
         iid = self.current_iid
         if iid is None:
             return
         marker = self._markers[iid]
-        if marker["move"] is False:
+        # Check if the marker is even allowed to be moved
+        if self.get_marker_value(marker, "move") is False:
             return
-        delta = marker["finish"] - marker["start"]
-        # Limit x to 0
-        x = max(self._timeline.canvasx(event.x), 0)
-        # Check if the timeline needs to be extended
-        limit = self.get_time_position(self._finish - delta)
-        if self._extend is False:
-            x = min(x, limit)
-        elif x > limit:  # self._extend is True
-            self.configure(finish=(self.get_position_time(x) + (marker["finish"] - marker["start"])) * 1.1)
-        # Get the new start value
-        start = self.get_position_time(x)
-        finish = start + (marker["finish"] - marker["start"])
-        rectangle_id, text_id = marker["rectangle_id"], marker["text_id"]
-        if rectangle_id not in self._timeline.find_all():
+        # Get the current coordinates of the marker
+        rectangle_id = marker["rectangle_id"]
+        x_mouse, y_mouse = self._mouse_coords
+        # This is a case that should never occur
+        if x_mouse is None or y_mouse is None:
+            raise RuntimeError("No mouse coordinates: the motion event was not preceded by a click event.")
+        # Calculate the new coordinates for the marker
+        x_canvas, y_canvas = self._timeline.canvasx(event.x), self._timeline.canvasy(event.y)
+        # If x_canvas is negative, the cursor has moved out of the actual canvas beyond the zero limit
+        if x_canvas < 0:
+            # A return is required to prevent weird movement when the cursor returns into the canvas window
             return
+        x_delta, y_delta = x_canvas - x_mouse, y_canvas - y_mouse
+        # change_category protection
+        y_delta = y_delta if self.get_marker_value(marker, "change_category") is True else 0
+        # zero edge protection
+        x_delta = max(x_delta, 0 - self._timeline.coords(rectangle_id)[0])
+        # Calculate the new coordinates for the rectangle
         x1, y1, x2, y2 = self._timeline.coords(rectangle_id)
+        rectangle_coords = (x1 + x_delta, y1 + y_delta, x2 + x_delta, y2 + y_delta)
+        x1, y1, x2, y2 = rectangle_coords
+        start, finish = self.get_position_time(x1), self.get_position_time(x2)
+        delta = marker["finish"] - marker["start"]
+        # Update the mouse coordinates
+        self._mouse_coords = event.x, event.y
+        # Extend protection
+        x1, x2 = self.check_extend(x1, x2)
+        # Category change protection
+        if y_delta is not 0:
+            y1, y2 = self.check_change_category(iid, event.y)
         # Overlap protection
-        allow_overlap = marker["allow_overlap"]
-        allow_overlap = self._marker_allow_overlap if allow_overlap == "default" else allow_overlap
-        if allow_overlap is False:
-            for marker_dict in self.markers.values():
-                if marker_dict["allow_overlap"] is True:
-                    continue
-                if marker["iid"] != marker_dict["iid"] and marker["category"] == marker_dict["category"]:
-                    if marker_dict["start"] < start < marker_dict["finish"]:
-                        start = marker_dict["finish"] if start < marker_dict["finish"] else marker_dict["start"]
-                        finish = start + (marker["finish"] - marker["start"])
-                        x = self.get_time_position(start)
-                        break
-                    if marker_dict["start"] < finish < marker_dict["finish"]:
-                        finish = marker_dict["finish"] if finish > marker_dict["finish"] else marker_dict["start"]
-                        start = finish - (marker_dict["finish"] - marker_dict["start"])
-                        x = self.get_time_position(start)
-                        break
-        # Vertical movement
-        if marker["change_category"] is True or \
-                (marker["change_category"] == "default" and self._marker_change_category):
-            y = max(self._timeline.canvasy(event.y), 0)
-            category = min(self._rows.keys(), key=lambda category: abs(self._rows[category][0] - y))
-            marker["category"] = category
-            y1, y2 = self._rows[category]
+        start, finish = self.check_overlap(iid, self.get_position_time(x1), self.get_position_time(x2))
+        x1, x2 = self.get_time_position(start), self.get_time_position(finish)
         # Snapping to ticks
-        if marker["snap_to_ticks"] is True or (marker["snap_to_ticks"] == "default" and self._marker_snap_to_ticks):
-            # Start is prioritized over finish
-            for tick in self._ticks:
-                tick = self.get_time_position(tick)
-                # Start
-                if abs(x - tick) < self._snap_margin:
-                    x = tick
-                    break
-                # Finish
-                x_finish = x + delta
-                if abs(x_finish - tick) < self._snap_margin:
-                    delta = self.get_time_position(marker["finish"] - marker["start"])
-                    x = tick - delta
-                    break
-        rectangle_coords = (x, y1, x2 + (x - x1), y2)
+        if self.get_marker_value(marker, "snap_to_ticks") is True:
+            x1, x2 = self.check_snap_to_ticks(x1, x2)
+        # Move the marker to the calculated coordinates
+        rectangle_coords = (x1, y1, x2, y2)
+        rectangle_id, text_id = self.markers[iid]["rectangle_id"], self.markers[iid]["text_id"]
+        text_coords = TimeLine.calculate_text_coords(rectangle_coords)
         self._timeline.coords(rectangle_id, *rectangle_coords)
-        if text_id is not None:
-            text_x, text_y = TimeLine.calculate_text_coords(rectangle_coords)
-            self._timeline.coords(text_id, text_x, text_y)
-        if self._after_id is not None:
-            self.after_cancel(self._after_id)
-        args = (iid, (marker["start"], marker["finish"]), (start, finish))
-        self._after_id = self.after(10, self.after_handler(iid, "move_callback", args))
-        marker["start"] = start
-        marker["finish"] = finish
+        self._timeline.coords(text_id, *text_coords)
+        # Save the position changes to the marker dictionary
+        start = self.get_position_time(rectangle_coords[0])
+        self._markers[iid]["start"], self._markers[iid]["finish"] = start, start + delta
 
     def enter_handler(self, event):
         """
@@ -1047,6 +1032,70 @@ class TimeLine(ttk.Frame):
     """
     Miscellaneous
     """
+
+    def check_overlap(self, iid, start, finish):
+        """
+        Check if there is overlap between the marker with its new start and finish values and other markers, and adjust
+        the start and finish values if required.
+        """
+        marker = self.markers[iid]
+        if self.get_marker_value(marker, "allow_overlap") is False:
+            # Go through all the markers that do not allow overlapping
+            for marker_dict in self.markers.values():
+                # Check if the marker is valid for comparison
+                if (marker["iid"] == marker_dict["iid"] or marker["category"] != marker_dict["category"]
+                        or self.get_marker_value(marker_dict, "allow_overlap") is True):
+                    continue
+                # Determine whether there is overlapping, and adjust if necessary
+                if marker_dict["start"] < start < marker_dict["finish"]:
+                    start = marker_dict["finish"] if start < marker_dict["finish"] else marker_dict["start"]
+                    finish = start + (marker["finish"] - marker["start"])
+                if marker_dict["start"] < finish < marker_dict["finish"]:
+                    finish = marker_dict["finish"] if finish > marker_dict["finish"] else marker_dict["start"]
+                    start = finish - (marker_dict["finish"] - marker_dict["start"])
+        return start, finish
+
+    def check_change_category(self, iid, y):
+        """
+        Check if the category has to be updated based on a new y1 and y2 value
+        """
+        category = min(self._rows.keys(), key=lambda category: abs(self._rows[category][0] - y))
+        self._markers[iid]["category"] = category
+        return self._rows[category]
+
+    def check_snap_to_ticks(self, x1, x2):
+        """
+        Check if the marker should be snapped to a tick value based on its coordinates and return the new x1 and x2
+        values if that is the case, otherwise return the original values
+        """
+        x_delta = x2 - x1
+        for tick in self._ticks:
+            tick = self.get_time_position(tick)  # tick is now a time unit value
+            # Start
+            if abs(x1 - tick) < self._snap_margin:
+                x1 = tick
+                break
+            # Finish
+            if abs(x2 - tick) < self._snap_margin:
+                x1, x2 = tick, tick + x_delta
+                break
+        return x1, x1 + x_delta
+
+    def check_extend(self, x1, x2):
+        limit = self.get_time_position(self._finish)
+        x_delta = x2 - x1
+        if self._extend is False:
+            x2 = min(x2, limit)
+            return x2 - x_delta, x2
+        if x2 > limit:
+            self.configure(finish=self.get_position_time(x2) * 1.1)
+        return x1, x2
+
+    def get_marker_value(self, marker_dict, key):
+        """
+        Get the value for a marker taking default into account
+        """
+        return getattr(self, "_marker_{}".format(key)) if marker_dict[key] == "default" else marker_dict[key]
 
     @staticmethod
     def calculate_text_coords(rectangle_coords):
